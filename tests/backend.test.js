@@ -1,0 +1,18 @@
+const fs=require('fs'), vm=require('vm'),assert=require('assert/strict');
+const source=fs.readFileSync(require('path').join(__dirname,'../apps-script/Code.gs'),'utf8');
+const rows=[];const props={SPREADSHEET_ID:'test',ENVIAR_CORREOS:'NO',ACEPTAR_COMPRAS:'SI'};let sent=0,locked=false;
+const headers=['Fecha','Codigo','Nombre','Correo','Consentimiento correo','Detalle JSON','Total Q','Costo Q','Utilidad bruta Q','Estado correo'];
+const sheet={getLastRow:()=>rows.length+1,getRange:(r,c,n,w)=>({getValues:()=>r===1?[headers]:rows.map(x=>x.slice()),setValue:v=>{rows[r-2][c-1]=v}}),appendRow:r=>rows.push(r)};
+const ctx={console:{log:console.log,error:()=>{}},PropertiesService:{getScriptProperties:()=>({getProperty:k=>props[k]})},SpreadsheetApp:{openById:()=>({getSheetByName:()=>sheet}),flush:()=>{}},LockService:{getScriptLock:()=>({tryLock:()=>{assert(!locked);locked=true;return true},releaseLock:()=>{locked=false}})},MailApp:{getRemainingDailyQuota:()=>100,sendEmail:()=>sent++},Utilities:{formatDate:()=> '22/10/2026 12:00'},HtmlService:{createHtmlOutput:html=>({html,setTitle(){return this}})},ContentService:{createTextOutput:text=>({text,setMimeType(){return this}}),MimeType:{JSON:'json'}}};
+vm.createContext(ctx);vm.runInContext(source,ctx);
+const p={id:'12345678-1234-1234-1234-123456789abc',name:'=Prueba',email:'test@example.com',consent:true,items:[{id:'P01',quantity:2}]};
+const post=p=>ctx.doPost({parameter:{payload:JSON.stringify(p)}});
+assert(post(p).html.includes('Compra simulada registrada'));assert.equal(rows.length,1);assert.equal(rows[0][6],1300);assert.equal(rows[0][7],780);assert.equal(rows[0][2],"'=Prueba");assert.equal(sent,0);
+post(p);assert.equal(rows.length,1);
+for(const bad of [{...p,items:[{id:'P01',quantity:-1}]},{...p,items:[{id:'P01',quantity:1.5}]},{...p,items:[{id:'P01',quantity:1},{id:'P01',quantity:1}]},{...p,email:'test@example.com,other@example.com'},{...p,consent:'true'}])assert(post(bad).html.includes('No se completó'));
+props.ENVIAR_CORREOS='SI';post({...p,id:'22345678-1234-1234-1234-123456789abc'});assert.equal(sent,1);
+post({...p,id:'32345678-1234-1234-1234-123456789abc'});assert.equal(sent,1);assert.equal(rows.length,3);
+post({...p,id:'42345678-1234-1234-1234-123456789abc',email:'other@example.com',consent:false});assert.equal(sent,1);
+const summary=JSON.parse(ctx.doGet({parameter:{action:'resumen'}}).text);assert.equal(summary.compras,4);assert.equal(summary.ingresos,5200);assert.equal(summary.productos[0].existencias,92);assert(!JSON.stringify(summary).includes('example.com'));assert(!JSON.stringify(summary).includes('=Prueba'));
+props.ACEPTAR_COMPRAS='NO';assert(post({...p,id:'52345678-1234-1234-1234-123456789abc'}).html.includes('cerrada'));assert(!locked);
+console.log('PASS: registro, precios, duplicados, validación, consentimiento, correo, resumen sin datos personales y cierre.');
